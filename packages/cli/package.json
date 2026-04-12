@@ -1,0 +1,31 @@
+{
+  "name": "@transmuter/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "transmuter": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "predev": "pnpm --filter @transmuter/core run build:esm",
+    "dev": "tsx --tsconfig tsconfig.dev.json src/index.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.12",
+    "@transmuter/core": "workspace:*",
+    "hono": "^4.12.9",
+    "ink": "^5.2.0",
+    "ink-spinner": "^5.0.0",
+    "pastel": "^3.0.0",
+    "react": "^18.3.0",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0"
+  }
+}

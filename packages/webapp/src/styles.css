@@ -1,0 +1,106 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Base surfaces (same scale as Mizuchi/gba-kit) */
+  --bg-root: #0f172a;       /* slate-950 */
+  --bg-surface: #1e293b;    /* slate-800 */
+  --bg-elevated: #334155;   /* slate-700 */
+  --border-subtle: #334155; /* slate-700 */
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+
+  /* Transmuter brand — teal primary, emerald accent.
+     Inspired by the teal magical flames around the fox in the logo.
+     Orange/amber are reserved for actual warning states. */
+  --brand-300: #5eead4;     /* teal-300  — active text */
+  --brand-400: #2dd4bf;     /* teal-400  — primary interactive */
+  --brand-500: #14b8a6;     /* teal-500  — pressed / borders */
+  --accent-emerald: #34d399;/* emerald-400 — gradient tail / secondary accent */
+  --logo-glow: #f97316;     /* orange-500 — keeps the fox logo warm */
+
+  /* Semantic status (unchanged across the design family) */
+  --status-green: #34d399;
+  --status-yellow: #fbbf24;
+  --status-red: #f87171;
+  --status-purple: #a78bfa;
+}
+
+html {
+  background-color: var(--bg-root);
+}
+
+body {
+  @apply bg-slate-950 text-slate-100 antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  margin: 0;
+}
+
+/* Code blocks */
+pre, code {
+  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
+}
+
+/* Diff styling */
+.diff-add { @apply bg-emerald-950 text-emerald-300; }
+.diff-remove { @apply bg-red-950 text-red-300; }
+.diff-header { @apply text-slate-500; }
+
+/* Starry-night syntax highlighting (VS Code dark theme) */
+.pl-c { color: #6a9955; }
+.pl-c1, .pl-s .pl-v { color: #b5cea8; }
+.pl-e, .pl-en { color: #dcdcaa; }
+.pl-s .pl-s1, .pl-smi { color: #9cdcfe; }
+.pl-ent { color: #4ec9b0; }
+.pl-k { color: #569cd6; }
+.pl-pds, .pl-s, .pl-s .pl-pse .pl-s1,
+.pl-sr, .pl-sr .pl-cce, .pl-sr .pl-sra, .pl-sr .pl-sre { color: #ce9178; }
+.pl-v, .pl-smw { color: #9cdcfe; }
+.pl-bu { color: #f44747; }
+.pl-ii { color: #f44747; background-color: #f44747; }
+.pl-c2 { color: #d7ba7d; background-color: #b5cea8; }
+.pl-sr .pl-cce { color: #4ec9b0; }
+.pl-ml { color: #b5cea8; }
+.pl-mh, .pl-mh .pl-en, .pl-ms { color: #569cd6; }
+.pl-mi { color: #9cdcfe; }
+.pl-mb { color: #ce9178; }
+.pl-md { color: #f44747; background-color: #5a1d1d; }
+.pl-mi1 { color: #b5cea8; background-color: #1a3a1a; }
+.pl-mc { color: #b5cea8; background-color: #1a3a1a; }
+.pl-mi2 { color: #d4d4d4; background-color: #1a3a3a; }
+.pl-mdr { color: #dcdcaa; }
+.pl-ba { color: #9cdcfe; }
+.pl-sg { color: #808080; }
+.pl-corl { text-decoration: underline; color: #ce9178; }
+
+/* React Flow — override edge/controls chrome so it blends with the dark theme */
+.react-flow__controls {
+  background: rgba(15, 23, 42, 0.9) !important;
+  border: 1px solid #334155 !important;
+  border-radius: 0.5rem !important;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35) !important;
+}
+.react-flow__controls-button {
+  background: transparent !important;
+  border-bottom: 1px solid #334155 !important;
+  color: #94a3b8 !important;
+  fill: #94a3b8 !important;
+}
+.react-flow__controls-button:hover {
+  background: rgba(45, 212, 191, 0.12) !important;
+  color: #2dd4bf !important;
+  fill: #2dd4bf !important;
+}
+.react-flow__minimap {
+  border: 1px solid #334155 !important;
+  border-radius: 0.5rem !important;
+  overflow: hidden;
+}
+.react-flow__attribution {
+  background: transparent !important;
+  color: #475569 !important;
+}
+.react-flow__attribution a { color: #64748b !important; }

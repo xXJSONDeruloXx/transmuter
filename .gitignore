@@ -1,0 +1,15 @@
+node_modules
+dist
+
+test-fixture/**/cleaned.*
+test-fixture/**/refined.*
+test-fixture/**/matching.*
+test-fixture/**/EntityItemDrop-*
+test-fixture/**/FadeOutController-*
+test-fixture/**/FixedMul8-*
+test-fixture/**/*-refined.*
+test-fixture/**/*.json
+
+**/transmuter-control.json
+
+**/tsconfig.tsbuildinfo

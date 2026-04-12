@@ -1,0 +1,8 @@
+[submodule "compilers/agbcc"]
+	path = compilers/agbcc
+	url = https://github.com/pret/agbcc.git
+	ignore = dirty
+[submodule "compilers/ido-static-recomp"]
+	path = compilers/ido-static-recomp
+	url = https://github.com/decompals/ido-static-recomp.git
+	ignore = dirty
