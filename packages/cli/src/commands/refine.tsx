@@ -5,11 +5,13 @@ import {
   Cleanup,
   type CleanupEvent,
   Compiler,
+  type FocusConstraint,
   type Guideline,
   type RefinementResult,
   Refiner,
   type RefinerEvent,
   Scorer,
+  type ViolationHypothesis,
   builtInGuidelines,
   detectLanguage,
   ensureLanguageRegistered,
@@ -17,6 +19,7 @@ import {
 import fs from 'fs/promises';
 import { Box, Text, render, useApp } from 'ink';
 import Spinner from 'ink-spinner';
+import os from 'os';
 import path from 'path';
 import React, { useEffect, useRef, useState } from 'react';
 
@@ -32,7 +35,7 @@ export interface RefineArgs {
   profile?: string;
   guideline?: string;
   concurrency?: number;
-  maxIterations?: number;
+  maxCompiles?: number;
   timeout?: number;
   seed?: number;
   config?: string;
@@ -41,6 +44,8 @@ export interface RefineArgs {
   sourcePrefix?: string;
   api?: boolean;
   apiPort?: number;
+  focusConstraints?: FocusConstraint[];
+  violationHypotheses?: ViolationHypothesis[];
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +211,7 @@ function reduceRefineEvent(state: RefineState, event: RefinerEvent): RefineState
 async function listGuidelines(args: RefineArgs): Promise<void> {
   const source = await fs.readFile(args.sourceFile, 'utf-8');
   const language = detectLanguage(args.sourceFile);
-  await ensureLanguageRegistered(language);
+  ensureLanguageRegistered(language);
   const decompConfig = await loadDecompYaml(args.config, args.cwd);
   const transmuterConfig = decompConfig?.tools?.transmuter;
 
@@ -577,7 +582,7 @@ function RefineApp({ args, onComplete }: { args: RefineArgs; onComplete: (code: 
       try {
         const source = await fs.readFile(args.sourceFile, 'utf-8');
         const language = detectLanguage(args.sourceFile);
-        await ensureLanguageRegistered(language);
+        ensureLanguageRegistered(language);
         const decompConfig = await loadDecompYaml(args.config, args.cwd);
         const transmuterConfig = decompConfig?.tools?.transmuter;
 
@@ -606,6 +611,13 @@ function RefineApp({ args, onComplete }: { args: RefineArgs; onComplete: (code: 
 
         const seed = args.seed ?? Math.floor(Math.random() * 0xffffffff);
 
+        const rawConcurrency = args.concurrency ?? transmuterConfig?.concurrency;
+        if (rawConcurrency !== undefined && (!Number.isInteger(rawConcurrency) || rawConcurrency < 1)) {
+          console.error(`Error: --concurrency must be a positive integer (got ${rawConcurrency}).`);
+          process.exit(1);
+        }
+        const concurrency = rawConcurrency ?? Math.min(os.cpus().length, 4);
+
         const refiner = new Refiner({
           source,
           language,
@@ -616,12 +628,14 @@ function RefineApp({ args, onComplete }: { args: RefineArgs; onComplete: (code: 
           sourcePrefix: args.sourcePrefix,
           profile: args.profile ?? transmuterConfig?.profile,
           guidelineId: args.guideline!,
-          concurrency: args.concurrency ?? transmuterConfig?.concurrency,
-          maxIterationsPerViolation: args.maxIterations ?? transmuterConfig?.maxIterations,
+          concurrency,
+          maxCompilesPerViolation: args.maxCompiles ?? transmuterConfig?.maxCompiles,
           timeoutMsPerViolation: args.timeout ?? transmuterConfig?.timeoutMs,
           seed,
           diffSettings: transmuterConfig?.diffSettings,
           skipMerge: args.skipMerge,
+          focusConstraints: args.focusConstraints,
+          violationHypotheses: args.violationHypotheses,
           onEvent(event: RefinerEvent) {
             setState((s) => reduceRefineEvent(s, event));
           },
@@ -717,10 +731,7 @@ function RefineApp({ args, onComplete }: { args: RefineArgs; onComplete: (code: 
         }
 
         // Save report (with cleanup data if available)
-        const report = store.toJSON();
-        if (cleanupReportData) {
-          report.cleanup = cleanupReportData;
-        }
+        const report = cleanupReportData ? { ...store.toJSON(), cleanup: cleanupReportData } : store.toJSON();
         const sourceDir = path.dirname(path.resolve(args.sourceFile));
         const reportFile = path.join(sourceDir, `refine-${Date.now()}.json`);
         await fs.writeFile(reportFile, JSON.stringify(report, null, 2));

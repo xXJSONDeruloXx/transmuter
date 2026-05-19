@@ -5,7 +5,6 @@
  * Designed for LLM agents and shell scripts.
  */
 import fs from 'fs/promises';
-import http from 'http';
 import path from 'path';
 
 export interface CtlArgs {
@@ -32,41 +31,24 @@ async function findDiscoveryFile(controlFile?: string, cwd?: string): Promise<Di
   }
 }
 
-function httpRequest(
+async function httpRequest(
   port: number,
   method: string,
   urlPath: string,
   body?: unknown,
 ): Promise<{ status: number; data: unknown }> {
-  return new Promise((resolve, reject) => {
-    const payload = body !== undefined ? JSON.stringify(body) : undefined;
-    const req = http.request(
-      {
-        hostname: '127.0.0.1',
-        port,
-        path: urlPath,
-        method,
-        headers: payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {},
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          const raw = Buffer.concat(chunks).toString('utf-8');
-          try {
-            resolve({ status: res.statusCode ?? 0, data: JSON.parse(raw) });
-          } catch {
-            resolve({ status: res.statusCode ?? 0, data: raw });
-          }
-        });
-      },
-    );
-    req.on('error', reject);
-    if (payload) {
-      req.write(payload);
-    }
-    req.end();
+  const payload = body !== undefined ? JSON.stringify(body) : undefined;
+  const res = await fetch(`http://127.0.0.1:${port}${urlPath}`, {
+    method,
+    headers: payload ? { 'Content-Type': 'application/json' } : {},
+    body: payload,
   });
+  const raw = await res.text();
+  try {
+    return { status: res.status, data: JSON.parse(raw) };
+  } catch {
+    return { status: res.status, data: raw };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +87,11 @@ const ACTIONS: Record<string, ActionDef> = {
     description: 'Get assembly diff for a candidate (arg: candidate-id)',
   },
   graph: { method: 'GET', path: '/graph', description: 'Get full candidate graph' },
+  'context-source': {
+    method: 'GET',
+    path: '/context-source',
+    description: 'Get the pre-isolation source (present only when --isolate was used)',
+  },
   rules: { method: 'GET', path: '/rules', description: 'Get rule stats' },
   timeline: { method: 'GET', path: '/timeline', description: 'Get score timeline' },
   report: { method: 'GET', path: '/report', description: 'Get full session report' },
@@ -196,6 +183,7 @@ Actions:
   children <id>                Get candidate children
   assembly <id>                Get assembly diff for a candidate
   graph                        Get full candidate graph
+  context-source               Get pre-isolation source (--isolate runs only)
   rules                        Get rule stats
   timeline                     Get score timeline
   report                       Get full session report

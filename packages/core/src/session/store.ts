@@ -4,6 +4,7 @@
  * Wire it to the MutationSearch's onEvent callback via push(), then query
  * during or after the session. Serializes to JSON for the webapp.
  */
+import { extractFunctionDefinition } from '~/isolate/extract-function.js';
 import type {
   CandidateNode,
   DiffBreakdown,
@@ -33,7 +34,7 @@ const EMPTY_CONFIG: SessionConfig = {
   compilerCommand: '',
   language: 'c',
   concurrency: 0,
-  maxIterations: 0,
+  maxCompiles: 0,
   timeoutMs: 0,
   seed: 0,
   mutationDepth: 1,
@@ -107,6 +108,7 @@ export class SessionStore {
 
   // Source tracking
   #originalSource = '';
+  #contextSource: string | undefined;
   #ruleDescriptions: Record<string, string> = {};
 
   constructor(options: SessionStoreOptions = {}) {
@@ -135,6 +137,24 @@ export class SessionStore {
   /** Set the original source for diff generation. */
   setOriginalSource(source: string): void {
     this.#originalSource = source;
+  }
+
+  /**
+   * Set the pre-isolation source ("context"). Serialized in the report so the
+   * webapp can show it alongside each candidate's isolated source.
+   */
+  setContextSource(source: string): void {
+    this.#contextSource = source;
+  }
+
+  /** The pre-isolation source if one was recorded, otherwise undefined. */
+  getContextSource(): string | undefined {
+    return this.#contextSource;
+  }
+
+  /** The target function name from the session config. Empty string if unset. */
+  getFunctionName(): string {
+    return this.#config?.functionName ?? '';
   }
 
   /** Process a MutationSearchEvent. Safe to call from the onEvent callback. */
@@ -191,6 +211,15 @@ export class SessionStore {
       }
 
       case 'compilation-error':
+        this.#totalErrors++;
+        this.#ensureRuleStats(event.ruleId).errors++;
+        this.#bumpTargetAttempt(event.mutationTargetId);
+        break;
+
+      case 'scorer-failed':
+        // Compile succeeded; scoring failed. Count it as an error so the
+        // report's totalErrors / per-rule errors reflect the failed attempt,
+        // and bump the target's attempt counter (same as compilation-error).
         this.#totalErrors++;
         this.#ensureRuleStats(event.ruleId).errors++;
         this.#bumpTargetAttempt(event.mutationTargetId);
@@ -496,10 +525,29 @@ export class SessionStore {
       metadata: { ...this.#metadata },
       config: this.#config ?? EMPTY_CONFIG,
       summary: this.getSummary(),
-      graph: this.getGraph(),
+      graph: this.#getGraphForReport(),
       ruleStats: this.getRuleStats(),
       scoreTimeline: this.getScoreTimeline(),
       focusResults: this.getFocusResults(),
+      ...(this.#contextSource !== undefined && { contextSource: this.#contextSource }),
+    };
+  }
+
+  /**
+   * Like getGraph(), but each candidate's `source` is sliced down to the
+   * target function definition. Used for the serialized report so consumers
+   * (webapp, ctl) only see what Transmuter actually mutates. The in-memory
+   * graph keeps the full source for engine consumers via getGraph().
+   */
+  #getGraphForReport(): { candidates: CandidateNode[]; mutationTargets: MutationTarget[]; superNodes?: SuperNode[] } {
+    const graph = this.getGraph();
+    const fnName = this.#config?.functionName;
+    if (!fnName) {
+      return graph;
+    }
+    return {
+      ...graph,
+      candidates: graph.candidates.map((c) => ({ ...c, source: extractFunctionDefinition(c.source, fnName) })),
     };
   }
 

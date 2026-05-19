@@ -6,6 +6,7 @@
  * - C++: @ast-grep/lang-cpp (official ast-grep package)
  * - Pascal: tree-sitter-pascal (Isopod/tree-sitter-pascal, Delphi/FPC grammar)
  */
+import cppLang from '@ast-grep/lang-cpp';
 import { type SgRoot, registerDynamicLanguage, parse as sgParse } from '@ast-grep/napi';
 import { createRequire } from 'module';
 import os from 'os';
@@ -36,7 +37,7 @@ function ensureCRegistered(): void {
   });
 }
 
-async function ensureCppRegistered(): Promise<void> {
+function ensureCppRegistered(): void {
   if (registered.has('cpp')) {
     return;
   }
@@ -44,8 +45,7 @@ async function ensureCppRegistered(): Promise<void> {
 
   // @ast-grep/lang-cpp exports a LangRegistration object with the correct
   // libraryPath, extensions, and languageSymbol for the platform.
-  const cppLang = await import('@ast-grep/lang-cpp');
-  registerDynamicLanguage({ cpp: cppLang.default });
+  registerDynamicLanguage({ cpp: cppLang });
 }
 
 function ensurePascalRegistered(): void {
@@ -56,7 +56,7 @@ function ensurePascalRegistered(): void {
 
   const require = createRequire(import.meta.url);
   const pkgDir = path.dirname(require.resolve('tree-sitter-pascal/package.json'));
-  // tree-sitter-pascal builds via node-gyp into build/Release/
+  // tree-sitter-pascal's node-gyp-build install script populates build/Release/
   const libPath = path.join(pkgDir, 'build', 'Release', 'tree_sitter_pascal_binding.node');
 
   registerDynamicLanguage({
@@ -68,17 +68,14 @@ function ensurePascalRegistered(): void {
   });
 }
 
-/**
- * Ensure the grammar for a language is registered.
- * C and Pascal are synchronous; C++ requires an async import.
- */
-export async function ensureLanguageRegistered(language: Language): Promise<void> {
+/** Ensure the grammar for a language is registered. */
+export function ensureLanguageRegistered(language: Language): void {
   switch (language) {
     case 'c':
       ensureCRegistered();
       break;
     case 'cpp':
-      await ensureCppRegistered();
+      ensureCppRegistered();
       break;
     case 'pascal':
       ensurePascalRegistered();
@@ -86,24 +83,52 @@ export async function ensureLanguageRegistered(language: Language): Promise<void
   }
 }
 
-/** Parse C source code into an ast-grep SgRoot. */
-export function parseC(source: string): SgRoot {
-  ensureCRegistered();
-  return sgParse('c', source);
+/** Parse source code in the given language into an ast-grep SgRoot. */
+export function parse(language: Language, source: string): SgRoot {
+  ensureLanguageRegistered(language);
+  return sgParse(language, source);
 }
 
 /**
- * Parse source code in the given language into an ast-grep SgRoot.
- * The language grammar must already be registered via ensureLanguageRegistered().
+ * LRU-bounded cache for parsed SgRoots, keyed on (language, source).
+ *
+ * Rationale: during a mutation search the orchestrator iterates on the same
+ * head-candidate source many times in a row — the source only changes when a
+ * fork produces a new candidate. Re-parsing the full source (~45 ms on a
+ * 426 KB ctx file) on every iteration dominates the non-compile CPU budget.
+ *
+ * SgRoot is read-only for rules (they call `.root().find(...)` and never
+ * mutate the AST), so sharing a parse across iterations is safe.
+ *
+ * The cache is keyed on the raw source string. JS `Map` hashes string keys by
+ * content (per the language spec), so the same source produced by different
+ * code paths (slot A vs slot B, candidate vs mutation result) still hits.
  */
-export function parse(language: Language, source: string): SgRoot {
-  // Synchronous registration for C and Pascal as a convenience —
-  // callers should have already called ensureLanguageRegistered() during init.
-  if (language === 'c') {
-    ensureCRegistered();
-  } else if (language === 'pascal') {
-    ensurePascalRegistered();
+const PARSE_CACHE_MAX = 16;
+const parseCache = new Map<string, SgRoot>();
+
+/** Parse with LRU memoization. Safe for any caller that only reads the AST. */
+export function parseCached(language: Language, source: string): SgRoot {
+  const key = `${language}\0${source}`;
+  const cached = parseCache.get(key);
+  if (cached !== undefined) {
+    // Touch: move to MRU end.
+    parseCache.delete(key);
+    parseCache.set(key, cached);
+    return cached;
   }
-  // For C++, the caller MUST have called ensureLanguageRegistered('cpp') first.
-  return sgParse(language, source);
+  const root = parse(language, source);
+  if (parseCache.size >= PARSE_CACHE_MAX) {
+    const oldest = parseCache.keys().next().value;
+    if (oldest !== undefined) {
+      parseCache.delete(oldest);
+    }
+  }
+  parseCache.set(key, root);
+  return root;
+}
+
+/** Reset the parse cache. Used by tests that want deterministic timing. */
+export function clearParseCache(): void {
+  parseCache.clear();
 }

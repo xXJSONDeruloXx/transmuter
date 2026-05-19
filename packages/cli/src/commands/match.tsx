@@ -1,18 +1,16 @@
 /**
  * `transmuter match` command — main permutation command with live dashboard.
- *
- * On Ctrl+C: stops the search, waits for in-flight compilations to finish,
- * then shows a brief cooldown before exiting. This gives the OS time to reclaim
- * resources from the compilation burst so the next command starts immediately.
  */
 import {
   Cleanup,
   type CleanupEvent,
+  type FocusConstraint,
   MutationSearch,
   type MutationSearchEvent,
   type MutationSearchOptions,
   type SessionConfig,
   SessionStore,
+  defaultConcurrency,
   detectLanguage,
   ensureLanguageRegistered,
 } from '@transmuter/core';
@@ -34,10 +32,11 @@ export interface MatchArgs {
   cwd?: string;
   profile?: string;
   concurrency?: number;
-  maxIterations?: number;
+  maxCompiles?: number;
   timeout?: number;
   seed?: number;
   noReduce?: boolean;
+  isolate?: boolean;
   depth?: number;
   noCleanup?: boolean;
   config?: string;
@@ -45,6 +44,7 @@ export interface MatchArgs {
   sourcePrefix?: string;
   api?: boolean;
   apiPort?: number;
+  focusConstraints?: FocusConstraint[];
 }
 
 function formatDuration(ms: number): string {
@@ -308,8 +308,8 @@ function MatchApp({ args, onComplete }: { args: MatchArgs; onComplete: (code: nu
 
   // Ctrl+C: stop search gracefully
   useInput(
-    (_input, key) => {
-      if (key.ctrl && _input === 'c' && phase === 'running') {
+    (input, key) => {
+      if (key.ctrl && input === 'c' && phase === 'running') {
         setPhase('stopping');
         searchRef.current?.stop();
       }
@@ -330,7 +330,7 @@ function MatchApp({ args, onComplete }: { args: MatchArgs; onComplete: (code: nu
       try {
         const source = await fs.readFile(args.sourceFile, 'utf-8');
         const language = detectLanguage(args.sourceFile);
-        await ensureLanguageRegistered(language);
+        ensureLanguageRegistered(language);
         const decompConfig = await loadDecompYaml(args.config, args.cwd);
         const transmuterConfig = decompConfig?.tools?.transmuter;
 
@@ -377,11 +377,24 @@ function MatchApp({ args, onComplete }: { args: MatchArgs; onComplete: (code: nu
           return;
         }
 
-        let finalSource = source;
+        let workingSource = source;
+        let contextSource: string | undefined;
+        if (args.isolate ?? transmuterConfig?.isolate) {
+          if (language !== 'c') {
+            console.error(`Error: --isolate is only supported for C sources (got '${language}').`);
+            process.exit(1);
+          }
+          const { isolateFunction } = await import('@transmuter/core');
+          const result = isolateFunction(workingSource, fnName);
+          contextSource = workingSource;
+          workingSource = result.source;
+        }
+
+        let finalSource = workingSource;
         if (!(args.noReduce ?? transmuterConfig?.noReduce)) {
           const { Reducer } = await import('@transmuter/core');
           const reducer = new Reducer({
-            source,
+            source: workingSource,
             functionName: fnName,
             targetObjectPath: targetPath,
             compilerCommand,
@@ -393,32 +406,41 @@ function MatchApp({ args, onComplete }: { args: MatchArgs; onComplete: (code: nu
         }
 
         const seed = args.seed ?? Math.floor(Math.random() * 0xffffffff);
-        const concurrency = args.concurrency ?? transmuterConfig?.concurrency;
-        const maxIterations = args.maxIterations ?? transmuterConfig?.maxIterations;
+        const rawConcurrency = args.concurrency ?? transmuterConfig?.concurrency;
+        if (rawConcurrency !== undefined && (!Number.isInteger(rawConcurrency) || rawConcurrency < 1)) {
+          console.error(`Error: --concurrency must be a positive integer (got ${rawConcurrency}).`);
+          process.exit(1);
+        }
+        const concurrency = rawConcurrency ?? defaultConcurrency();
+        const maxCompiles = args.maxCompiles ?? transmuterConfig?.maxCompiles;
         const timeoutMs = args.timeout ?? transmuterConfig?.timeoutMs;
         const mutationDepth = args.depth ?? transmuterConfig?.mutationDepth;
 
         // Create session store
         const store = new SessionStore({
           metadata: { label: `${fnName} — CLI match` },
+          focusConstraints: args.focusConstraints,
         });
         storeRef.current = store;
         store.setOriginalSource(finalSource);
+        if (contextSource !== undefined) {
+          store.setContextSource(contextSource);
+        }
         store.setConfig({
           functionName: fnName,
           targetObjectPath: targetPath,
           compilerCommand,
           language,
           profile: resolvedProfile,
-          concurrency: concurrency ?? 0,
-          maxIterations: maxIterations ?? Infinity,
+          concurrency,
+          maxCompiles: maxCompiles ?? Infinity,
           timeoutMs: timeoutMs ?? Infinity,
           seed,
           mutationDepth: mutationDepth ?? 1,
           lateralForkBudget: 0,
           ruleWeights: transmuterConfig?.ruleWeights ?? {},
           disabledRules: transmuterConfig?.disabledRules ?? [],
-          focusConstraints: [],
+          focusConstraints: args.focusConstraints ?? [],
         } satisfies SessionConfig);
 
         const opts: MutationSearchOptions = {
@@ -430,7 +452,7 @@ function MatchApp({ args, onComplete }: { args: MatchArgs; onComplete: (code: nu
           cwd: args.cwd ?? process.cwd(),
           profile: resolvedProfile,
           concurrency,
-          maxIterations,
+          maxCompiles,
           timeoutMs,
           seed,
           mutationDepth,
@@ -438,6 +460,7 @@ function MatchApp({ args, onComplete }: { args: MatchArgs; onComplete: (code: nu
           disabledRules: transmuterConfig?.disabledRules,
           diffSettings: transmuterConfig?.diffSettings,
           sourcePrefix: args.sourcePrefix,
+          focusConstraints: args.focusConstraints,
           onEvent(event: MutationSearchEvent) {
             setState((s) => reduceEvent(s, event));
             store.push(event);
@@ -534,10 +557,7 @@ function MatchApp({ args, onComplete }: { args: MatchArgs; onComplete: (code: nu
         }
 
         // Save session report (with cleanup data if available)
-        const report = store.toJSON();
-        if (cleanupReportData) {
-          report.cleanup = cleanupReportData;
-        }
+        const report = cleanupReportData ? { ...store.toJSON(), cleanup: cleanupReportData } : store.toJSON();
         const sourceDir = path.dirname(path.resolve(args.sourceFile));
         const reportFile = path.join(sourceDir, `session-${Date.now()}.json`);
         await fs.writeFile(reportFile, JSON.stringify(report, null, 2));

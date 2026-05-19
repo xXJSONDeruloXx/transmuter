@@ -39,4 +39,35 @@ export class CircularBuffer<T> {
     copy.#size = this.#size;
     return copy;
   }
+
+  /**
+   * Snapshot the buffer's internal state for serialization.
+   * Used by AdaptiveSelector.serialize() to ship Thompson stats to workers.
+   */
+  toSnapshot(): { capacity: number; head: number; size: number; values: T[] } {
+    return {
+      capacity: this.#buffer.length,
+      head: this.#head,
+      size: this.#size,
+      // Slice up to `size` in raw buffer order (not insertion order — when the
+      // buffer has wrapped, indices 0..size are physical positions, not chronological).
+      // fromSnapshot copies values back to the same indices and re-pins head/size,
+      // so eviction continues from the right slot. Slots beyond `size` are
+      // uninitialised and excluded.
+      values: this.#buffer.slice(0, this.#size),
+    };
+  }
+
+  /**
+   * Restore a buffer from a snapshot produced by toSnapshot().
+   */
+  static fromSnapshot<T>(snapshot: { capacity: number; head: number; size: number; values: T[] }): CircularBuffer<T> {
+    const buf = new CircularBuffer<T>(snapshot.capacity);
+    for (let i = 0; i < snapshot.values.length; i++) {
+      buf.#buffer[i] = snapshot.values[i]!;
+    }
+    buf.#head = snapshot.head;
+    buf.#size = snapshot.size;
+    return buf;
+  }
 }

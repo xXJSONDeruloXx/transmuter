@@ -19,7 +19,7 @@ pnpm run test:fixture -- --fade-out-controller   # single fixture
 
 # Core package dev (watch build, no DTS)
 pnpm --filter @transmuter/core run build:esm
-pnpm --filter @transmuter/core run dev     # tsup --watch
+pnpm --filter @transmuter/core run dev     # bun --watch run build.ts
 
 # CLI — dev mode auto-builds core first (predev hook)
 pnpm --filter @transmuter/cli run dev -- match path/to/source.c
@@ -67,8 +67,7 @@ For the full design, read `.claude/docs/architecture.md`.
 ## Non-obvious gotchas
 
 - **Never mutate a `CandidateNode`.** They are immutable snapshots. Improvements create new nodes via `pool.report()` — never reach into `#candidates` and edit a field.
-- **C++ grammar must be registered async.** `ensureLanguageRegistered('cpp')` returns a promise (dynamic import of `@ast-grep/lang-cpp`). C and Pascal are synchronous. If you skip the await, rules will throw at parse time.
-- **`objdiff-wasm` WASM loader patches `globalThis.fetch` during init** to resolve `file://` URLs for the `.wasm` asset. This only happens once per process inside `scoring/scorer.ts` → `initObjdiff()`. Don't call `initObjdiff` yourself — use `Scorer` / `Objdiff` and let them share the singleton.
+- **`objdiff-wasm` init is a per-process singleton.** `scoring/scorer.ts` → `initObjdiff()` lazily loads the WASM and the result is shared across all `Scorer` / `Objdiff` instances. Don't call `initObjdiff` yourself — go through `Scorer` / `Objdiff` so they share the singleton.
 - **On ARMv4T, `op-mismatch` is never produced.** objdiff classifies every mnemonic-only diff as `replace`. `opMismatch` is effectively MIPS-only. Write tests accordingly — see the note in `packages/core/src/scoring/scorer.spec.ts`.
 - **IDO Pascal lowercases all symbol names.** `IsPowerOfTwo` → `ispoweroftwo` in the ELF. Pascal rule helpers match function names case-insensitively. Don't "fix" them to be case-sensitive.
 - **Unsized symbols span to end of section.** If a `.s` fixture lacks a `.size` directive, objdiff treats the symbol as covering everything after its label. Real ROM-extracted targets hit this — there's a regression test in `scoring/objdiff.spec.ts`.

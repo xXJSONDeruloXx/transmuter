@@ -10,7 +10,8 @@
  */
 import type { SgNode } from '@ast-grep/napi';
 import { Compiler } from '~/compiler/compiler.js';
-import { parseC } from '~/parser.js';
+import { parse } from '~/parser.js';
+import { getCFunctionName } from '~/rules/helpers.js';
 import { Scorer } from '~/scoring/scorer.js';
 import type { ReducerOptions, ReducerResult } from '~/types.js';
 
@@ -99,15 +100,10 @@ export class Reducer {
    * Try removing all at once, then binary search if that changes the score.
    */
   async #removeFunctions(source: string): Promise<[string, number]> {
-    const root = parseC(source);
+    const root = parse('c', source);
     const fnDefs = root.root().findAll({ rule: { kind: 'function_definition' } });
 
-    // Separate target from non-target functions
-    const nonTarget = fnDefs.filter((fn) => {
-      const declarator = fn.find({ rule: { kind: 'function_declarator' } });
-      const name = declarator?.find({ rule: { kind: 'identifier' } });
-      return name?.text() !== this.#opts.functionName;
-    });
+    const nonTarget = fnDefs.filter((fn) => getCFunctionName(fn) !== this.#opts.functionName);
 
     if (nonTarget.length === 0) {
       return [source, 0];
@@ -163,7 +159,7 @@ export class Reducer {
    * Phase 3: Remove global variable declarations, typedefs, struct/union/enum definitions.
    */
   async #removeGlobalDeclarations(source: string): Promise<[string, number]> {
-    const root = parseC(source);
+    const root = parse('c', source);
     const topLevel = root.root().children();
 
     // Collect global declarations (not function definitions, not preprocessor directives)
@@ -199,14 +195,10 @@ export class Reducer {
    * Phase 5: Replace non-target function bodies with stubs.
    */
   async #stubFunctions(source: string): Promise<[string, number]> {
-    const root = parseC(source);
+    const root = parse('c', source);
     const fnDefs = root.root().findAll({ rule: { kind: 'function_definition' } });
 
-    const nonTarget = fnDefs.filter((fn) => {
-      const declarator = fn.find({ rule: { kind: 'function_declarator' } });
-      const name = declarator?.find({ rule: { kind: 'identifier' } });
-      return name?.text() !== this.#opts.functionName;
-    });
+    const nonTarget = fnDefs.filter((fn) => getCFunctionName(fn) !== this.#opts.functionName);
 
     if (nonTarget.length === 0) {
       return [source, 0];
@@ -228,17 +220,12 @@ export class Reducer {
       const stubBody = returnType === 'void' ? '{}' : '{ return 0; }';
 
       // Re-parse to get fresh positions (source may have shifted from prior stubs)
-      const freshRoot = parseC(current);
+      const origName = getCFunctionName(fn);
+      const freshRoot = parse('c', current);
       const freshFn = freshRoot
         .root()
         .findAll({ rule: { kind: 'function_definition' } })
-        .find((f) => {
-          const d = f.find({ rule: { kind: 'function_declarator' } });
-          const n = d?.find({ rule: { kind: 'identifier' } });
-          const origD = fn.find({ rule: { kind: 'function_declarator' } });
-          const origN = origD?.find({ rule: { kind: 'identifier' } });
-          return n?.text() === origN?.text();
-        });
+        .find((f) => getCFunctionName(f) === origName);
 
       if (!freshFn) {
         continue;
@@ -286,7 +273,7 @@ export class Reducer {
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i]!;
       // Re-parse to get fresh node positions
-      const freshRoot = parseC(current);
+      const freshRoot = parse('c', current);
       const freshNodes = freshRoot.root().findAll({ rule: { kind: node.kind() } });
 
       // Find the matching node by text content

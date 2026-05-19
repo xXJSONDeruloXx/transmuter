@@ -4,14 +4,13 @@
  * Score = instruction-level difference count between candidate and target.
  * Lower is better, 0 = perfect match.
  */
-import fs from 'fs/promises';
-import { fileURLToPath } from 'url';
+import type * as ObjdiffWasm from 'objdiff-wasm';
+import type { AssemblyScoreResult, DiffBreakdown } from '~/types.js';
 
-// objdiff-wasm types — imported dynamically to handle WASM loading
-type ObjdiffModule = typeof import('objdiff-wasm');
-type ParsedObject = import('objdiff-wasm').diff.Object;
-type ObjectDiff = import('objdiff-wasm').diff.ObjectDiff;
-type DiffConfig = import('objdiff-wasm').diff.DiffConfig;
+type ObjdiffModule = typeof ObjdiffWasm;
+type ParsedObject = ObjdiffWasm.diff.Object;
+type ObjectDiff = ObjdiffWasm.diff.ObjectDiff;
+type DiffConfig = ObjdiffWasm.diff.DiffConfig;
 
 /** Lazy singleton for the WASM module. */
 let wasmModulePromise: Promise<ObjdiffModule> | null = null;
@@ -24,24 +23,9 @@ async function getObjdiffModule(): Promise<ObjdiffModule> {
 }
 
 async function initObjdiff(): Promise<ObjdiffModule> {
-  // Node.js fetch doesn't support file:// URLs — patch temporarily for WASM loading
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input: string | URL | Request): Promise<Response> => {
-    const url = input.toString();
-    if (url.includes('objdiff.core.wasm')) {
-      const buffer = await fs.readFile(fileURLToPath(url));
-      return new Response(buffer, { headers: { 'content-type': 'application/wasm' } });
-    }
-    return originalFetch(input);
-  };
-
-  try {
-    const objdiff = await import('objdiff-wasm');
-    objdiff.init('error');
-    return objdiff;
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  const objdiff = await import('objdiff-wasm');
+  objdiff.init('error');
+  return objdiff;
 }
 
 export class Scorer {
@@ -67,7 +51,7 @@ export class Scorer {
       this.#diffConfig.setProperty(key, value);
     }
 
-    const targetBuffer = await fs.readFile(this.#targetObjectPath);
+    const targetBuffer = await Bun.file(this.#targetObjectPath).arrayBuffer();
     this.#targetObj = this.#objdiff.diff.Object.parse(new Uint8Array(targetBuffer), this.#diffConfig, 'target');
   }
 
@@ -81,7 +65,7 @@ export class Scorer {
       throw new Error('Scorer not initialized — call init() first');
     }
 
-    const candidateBuffer = await fs.readFile(candidateObjPath);
+    const candidateBuffer = await Bun.file(candidateObjPath).arrayBuffer();
     const candidateObj = this.#objdiff.diff.Object.parse(new Uint8Array(candidateBuffer), this.#diffConfig, 'base');
 
     const mappingConfig = {
@@ -104,12 +88,12 @@ export class Scorer {
    * Score a candidate and also extract assembly + diff in one pass.
    * Avoids re-parsing the object file compared to calling score() + assemblyDiff() separately.
    */
-  async scoreWithAssembly(candidateObjPath: string): Promise<import('~/types.js').AssemblyScoreResult | null> {
+  async scoreWithAssembly(candidateObjPath: string): Promise<AssemblyScoreResult | null> {
     if (!this.#objdiff || !this.#targetObj || !this.#diffConfig) {
       throw new Error('Scorer not initialized — call init() first');
     }
 
-    const candidateBuffer = await fs.readFile(candidateObjPath);
+    const candidateBuffer = await Bun.file(candidateObjPath).arrayBuffer();
     const candidateObj = this.#objdiff.diff.Object.parse(new Uint8Array(candidateBuffer), this.#diffConfig, 'base');
 
     const mappingConfig = {
@@ -174,7 +158,7 @@ export class Scorer {
       throw new Error('Scorer not initialized — call init() first');
     }
 
-    const candidateBuffer = await fs.readFile(candidateObjPath);
+    const candidateBuffer = await Bun.file(candidateObjPath).arrayBuffer();
     const candidateObj = this.#objdiff.diff.Object.parse(new Uint8Array(candidateBuffer), this.#diffConfig, 'base');
 
     const mappingConfig = {
@@ -281,7 +265,7 @@ export class Scorer {
     return result.trim();
   }
 
-  #extractDiffBreakdown(leftDiff: ObjectDiff, rightDiff: ObjectDiff): import('~/types.js').DiffBreakdown | null {
+  #extractDiffBreakdown(leftDiff: ObjectDiff, rightDiff: ObjectDiff): DiffBreakdown | null {
     const objdiff = this.#objdiff!;
     const diffConfig = this.#diffConfig!;
 

@@ -10,6 +10,7 @@ import type { DiffType, MutationApplyResult } from '~/types.js';
 import {
   type SimpleAssignment,
   extractSimpleAssignment,
+  findAllByKind,
   findTargetFunction,
   getIndentation,
   getStatements,
@@ -32,7 +33,7 @@ export const longChainAssignment: Rule = {
     }
 
     // Find all compound_statement blocks
-    const blocks = fn.findAll({ rule: { kind: 'compound_statement' } });
+    const blocks = findAllByKind(fn, 'compound_statement');
     if (blocks.length === 0) {
       return null;
     }

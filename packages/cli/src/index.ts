@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * @transmuter/cli — entry point
  *
@@ -14,6 +14,7 @@ import { type CtlArgs, ctlCommand } from './commands/ctl.js';
 import { type MatchArgs, matchCommand } from './commands/match.js';
 import { type ProfileDetectArgs, profileDetectCommand } from './commands/profile-detect.js';
 import { type RefineArgs, refineCommand } from './commands/refine.js';
+import { loadConstraints } from './load-constraints.js';
 
 const USAGE = `
 Usage: transmuter <command> [options]
@@ -30,17 +31,28 @@ Match Options:
   --compiler <cmd>     Compiler command template
   --cwd <path>         Working directory for compiler
   --profile <id>       Compiler profile (agbcc, old-agbcc, ido, mips-gcc-272)
-  --concurrency <n>    Number of concurrent slots
-  --max-iterations <n> Maximum iterations
+  --concurrency <n>    Number of concurrent slots (default: min(cpus, 4))
+                       Each slot runs in its own Bun Worker thread
+  --max-compiles <n>   Maximum compile attempts before stopping. Counts only
+                       mutations that survive dedup and reach the compiler;
+                       no-mutation/dedup early-exits don't count.
   --timeout <ms>       Maximum time in milliseconds
-  --seed <n>           RNG seed for reproducibility
+  --seed <n>           RNG seed for reproducibility (use with --concurrency 1
+                       and --max-compiles for bit-identical runs)
   --no-reduce          Skip source reduction before permuting
+  --isolate            Replace non-target, non-inline function bodies with
+                       forward declarations before reduce/match — useful on
+                       preprocessed .ctx files. C only; macros are preserved.
   --depth <n>          Mutations per iteration (default: 1)
   --no-cleanup         Skip cleanup after finding a match
   --config <path>      Path to decomp.yaml
   --version <name>     Version name for multi-version projects
   --api                Start HTTP control server for external access
   --api-port <n>       Fixed port for the API server (default: random)
+  --constraints <path> JSON file with focusConstraints (focus-region,
+                       avoid-region, hypothesis) to bias mutation
+                       selection. See .claude/docs/refine-mode.md for
+                       the schema (violationHypotheses is refine-only).
 
 Refine Options:
   --target <path>      Path to target object file (.o)
@@ -49,13 +61,17 @@ Refine Options:
   --guideline <id>     Guideline to apply (omit to list available)
   --cwd <path>         Working directory for compiler
   --profile <id>       Compiler profile
-  --concurrency <n>    Total concurrent slots
-  --max-iterations <n> Max iterations per violation (default: unlimited)
+  --concurrency <n>    Total concurrent slots (default: min(cpus, 4))
+  --max-compiles <n>   Max compile attempts per violation (default: unlimited)
+                       Counts only mutations that reach the compiler.
   --timeout <ms>       Max time per violation in ms (default: unlimited)
   --seed <n>           RNG seed for reproducibility
   --skip-merge         Only run Phase 1 exploration, skip merge
   --no-cleanup         Skip cleanup after refinement
   --config <path>      Path to decomp.yaml
+  --constraints <path> JSON file with focusConstraints and/or
+                       violationHypotheses to guide each violation's
+                       sub-search. See .claude/docs/refine-mode.md.
 
 Profile-detect Options:
   --profile <id>       Force a specific profile instead of auto-detecting
@@ -87,10 +103,11 @@ async function main(): Promise<void> {
           cwd: { type: 'string' },
           profile: { type: 'string' },
           concurrency: { type: 'string' },
-          'max-iterations': { type: 'string' },
+          'max-compiles': { type: 'string' },
           timeout: { type: 'string' },
           seed: { type: 'string' },
           'no-reduce': { type: 'boolean' },
+          isolate: { type: 'boolean' },
           depth: { type: 'string' },
           'no-cleanup': { type: 'boolean' },
           config: { type: 'string' },
@@ -98,12 +115,21 @@ async function main(): Promise<void> {
           'source-prefix': { type: 'string' },
           api: { type: 'boolean' },
           'api-port': { type: 'string' },
+          constraints: { type: 'string' },
         },
       });
 
       if (!positionals[0]) {
         console.error('Error: source file is required.\nUsage: transmuter match <source.c> [options]');
         process.exit(1);
+      }
+
+      const matchConstraints = values.constraints ? await loadConstraints(values.constraints) : undefined;
+      if (matchConstraints?.violationHypotheses?.length) {
+        console.error(
+          'Warning: violationHypotheses in constraints file are ignored by `match` ' +
+            '(they are refine-only). Pass `hypothesis` constraints inside focusConstraints instead.',
+        );
       }
 
       const matchArgs: MatchArgs = {
@@ -114,10 +140,11 @@ async function main(): Promise<void> {
         cwd: values.cwd,
         profile: values.profile,
         concurrency: values.concurrency ? Number(values.concurrency) : undefined,
-        maxIterations: values['max-iterations'] ? Number(values['max-iterations']) : undefined,
+        maxCompiles: values['max-compiles'] ? Number(values['max-compiles']) : undefined,
         timeout: values.timeout ? Number(values.timeout) : undefined,
         seed: values.seed ? Number(values.seed) : undefined,
         noReduce: values['no-reduce'],
+        isolate: values.isolate,
         depth: values.depth ? Number(values.depth) : undefined,
         noCleanup: values['no-cleanup'],
         config: values.config,
@@ -127,6 +154,7 @@ async function main(): Promise<void> {
           : undefined,
         api: values.api,
         apiPort: values['api-port'] ? Number(values['api-port']) : undefined,
+        focusConstraints: matchConstraints?.focusConstraints,
       };
 
       await matchCommand(matchArgs);
@@ -145,12 +173,13 @@ async function main(): Promise<void> {
           cwd: { type: 'string' },
           profile: { type: 'string' },
           concurrency: { type: 'string' },
-          'max-iterations': { type: 'string' },
+          'max-compiles': { type: 'string' },
           timeout: { type: 'string' },
           seed: { type: 'string' },
           'skip-merge': { type: 'boolean' },
           'no-cleanup': { type: 'boolean' },
           config: { type: 'string' },
+          constraints: { type: 'string' },
           'source-prefix': { type: 'string' },
           api: { type: 'boolean' },
           'api-port': { type: 'string' },
@@ -162,6 +191,10 @@ async function main(): Promise<void> {
         process.exit(1);
       }
 
+      const refineConstraints = values.constraints ? await loadConstraints(values.constraints) : undefined;
+      const focusConstraints = refineConstraints?.focusConstraints;
+      const violationHypotheses = refineConstraints?.violationHypotheses;
+
       const refineArgs: RefineArgs = {
         sourceFile: positionals[0],
         target: values.target,
@@ -171,12 +204,14 @@ async function main(): Promise<void> {
         cwd: values.cwd,
         profile: values.profile,
         concurrency: values.concurrency ? Number(values.concurrency) : undefined,
-        maxIterations: values['max-iterations'] ? Number(values['max-iterations']) : undefined,
+        maxCompiles: values['max-compiles'] ? Number(values['max-compiles']) : undefined,
         timeout: values.timeout ? Number(values.timeout) : undefined,
         seed: values.seed ? Number(values.seed) : undefined,
         skipMerge: values['skip-merge'],
         noCleanup: values['no-cleanup'],
         config: values.config,
+        focusConstraints,
+        violationHypotheses,
         sourcePrefix: values['source-prefix']
           ? await import('fs/promises').then((fs) => fs.readFile(values['source-prefix']!, 'utf-8'))
           : undefined,

@@ -22,9 +22,7 @@ Main features:
 >
 > [Learn more by watching my talk.](https://www.youtube.com/watch?v=sF_Yk0udbZw)
 
-## How to use
-
-### Setup
+## Setup
 
 1. Add this repository as a submodule on your decomp project
 
@@ -32,34 +30,44 @@ Main features:
 git submodule add https://github.com/macabeus/transmuter.git tools/transmuter
 ```
 
-2. Build Transmuter. It's recommended to write a shell script to handle this and push it into your repository:
+2. Build Transmuter. Transmuter runs on [Bun](https://bun.com) and uses `pnpm` as its workspace manager. Drop the script below into a `setup-transmuter.sh` at your repo root, then run it. Re-run it any time you bump the submodule.
 
 ```bash
-echo "Initializing tools submodules..."
-git submodule update --init
+cat > setup-transmuter.sh <<'EOF'
+#!/bin/bash
+set -e
+
+echo "Initializing tools/transmuter submodule..."
+git submodule update --init tools/transmuter
+
+if ! command -v bun &> /dev/null; then
+  echo "[tools/transmuter] bun not found, installing..."
+  curl -fsSL https://bun.com/install | bash
+  export PATH="$HOME/.bun/bin:$PATH"
+fi
 
 if ! command -v pnpm &> /dev/null; then
   echo "[tools/transmuter] pnpm not found, installing globally..."
-  npm install -g pnpm
+  bun install -g pnpm
 fi
 
-echo "[tools/transmuter] Installing npm dependencies..."
-cd tools/transmuter
-pnpm install
+echo "[tools/transmuter] Installing dependencies..."
+(cd tools/transmuter && pnpm install)
 
 echo "[tools/transmuter] Building..."
-pnpm run build
-
-echo "[tools/transmuter] Done!"
+(cd tools/transmuter && pnpm run build)
+EOF
+chmod +x setup-transmuter.sh
+./setup-transmuter.sh
 ```
 
-3. Invoke Transmuter directly via Node. The build produces a CLI entry at `tools/transmuter/packages/cli/dist/index.js`; run it with:
+3. Invoke Transmuter via `bun`. The build produces a CLI entry at `tools/transmuter/packages/cli/dist/index.js`; run it with:
 
 ```bash
-node tools/transmuter/packages/cli/dist/index.js match ...
+bun tools/transmuter/packages/cli/dist/index.js match ...
 ```
 
-The rest of this README writes `transmuter ...` for brevity. Substitute `node tools/transmuter/packages/cli/dist/index.js ...` when you run it.
+The rest of this README writes `transmuter ...` for brevity. Substitute `bun tools/transmuter/packages/cli/dist/index.js ...` when you run it.
 
 4. Add a `tools.transmuter` section to your [`decomp.yaml`](https://github.com/ethteck/decomp_settings) with the compiler command and optional flags. Example for a GBA project using `agbcc`:
 
@@ -82,11 +90,17 @@ tools:
       sed -i '' '/\.size/d' "$ASM_FILE"
 
       arm-none-eabi-as -mcpu=arm7tdmi -mthumb-interwork "$ASM_FILE" -o "{{outputPath}}"
-    # concurrency: 8 # Optional. Defaults to CPU count
-    # reduce: true # Optional. Whether to run source reduction before matching (recommended for large files)
+    # concurrency: 8 # Optional. Defaults to min(CPU count, 4)
+    # noReduce: true # Optional. Skip source reduction (reduction runs by default; recommended on large files)
+    # isolate: true # Optional. Strip non-target, non-inline function bodies + #defines before match
+    # mutationDepth: 1 # Optional. Mutations chained per iteration
+    # maxCompiles: 10000 # Optional. Stop after N compile attempts
+    # timeoutMs: 60000 # Optional. Stop after N milliseconds
     # ruleWeights: # Optional. Override default rule weights for this project
     #   asm-barrier: 25
     #   pad-var-decl: 20
+    # disabledRules: # Optional. Disable specific rules entirely
+    #   - empty-stmt
 ```
 
 > ⚠️ Real projects usually need more than a one-line compile step. Typical additions:
@@ -153,23 +167,27 @@ transmuter match base.pas \
 
 **All flags:**
 
-| Flag                   | Description                                                                                          |
-|------------------------|------------------------------------------------------------------------------------------------------|
-| `--target <path>`      | Target object file (.o)                                                                              |
-| `--function <name>`    | Function name to match                                                                               |
-| `--compiler <cmd>`     | Compiler command template (`{{inputPath}}`, `{{outputPath}}`, `{{functionName}}`)                    |
-| `--cwd <path>`         | Working directory for the compiler                                                                   |
-| `--profile <id>`       | Compiler profile: `agbcc`, `old-agbcc`, `ido`, `mips-gcc-272`                                        |
-| `--concurrency <n>`    | Parallel slots (default: CPU count)                                                                  |
-| `--max-iterations <n>` | Stop after N iterations                                                                              |
-| `--timeout <ms>`       | Stop after this many milliseconds                                                                    |
-| `--seed <n>`           | RNG seed for reproducible runs                                                                       |
-| `--depth <n>`          | Mutations to chain per iteration (default: 1)                                                        |
-| `--no-reduce`          | Do not minimize source before permuting                                                              |
-| `--no-cleanup`         | Do not clean up code after finding a match (do not removes temp vars, unnecessary casts)             |
-| `--config <path>`      | Explicit path to `decomp.yaml`                                                                       |
-| `--api`                | Start HTTP control server for external access                                                        |
-| `--api-port <n>`       | Fixed port for the API server (default: random)                                                      |
+| Flag                      | Description                                                                                                         |
+|---------------------------|---------------------------------------------------------------------------------------------------------------------|
+| `--target <path>`         | Target object file (.o)                                                                                             |
+| `--function <name>`       | Function name to match                                                                                              |
+| `--compiler <cmd>`        | Compiler command template (`{{inputPath}}`, `{{outputPath}}`, `{{functionName}}`)                                   |
+| `--cwd <path>`            | Working directory for the compiler                                                                                  |
+| `--profile <id>`          | Compiler profile: `agbcc`, `old-agbcc`, `ido`, `mips-gcc-272`                                                       |
+| `--concurrency <n>`       | Parallel slots, each running in its own worker thread (default: `min(CPU count, 4)`)                                |
+| `--max-compiles <n>`      | Stop after N compile attempts (counts only mutations that survived dedup; no-mutation/dedup don't count)            |
+| `--timeout <ms>`          | Stop after this many milliseconds                                                                                   |
+| `--seed <n>`              | RNG seed for reproducible runs                                                                                      |
+| `--depth <n>`             | Mutations to chain per iteration (default: 1)                                                                       |
+| `--no-reduce`             | Skip source reduction before permuting                                                                              |
+| `--isolate`               | Replace non-target, non-inline function bodies with forward declarations before reduce/match — useful on preprocessed `.ctx` files (macros are preserved) |
+| `--no-cleanup`            | Skip cleanup after finding a match (do not remove temp vars, unnecessary casts)                                     |
+| `--config <path>`         | Explicit path to `decomp.yaml`                                                                                      |
+| `--version <name>`        | Version name for multi-version projects (selects the matching `versions[]` entry in `decomp.yaml`)                  |
+| `--source-prefix <path>`  | File whose contents are prepended to every compiled candidate (typically `context.h`)                               |
+| `--constraints <path>`    | JSON file with `focusConstraints` (focus-region, avoid-region, hypothesis) to bias mutation selection               |
+| `--api`                   | Start HTTP control server for external access                                                                       |
+| `--api-port <n>`          | Fixed port for the API server (default: random)                                                                     |
 
 #### Refinement
 
@@ -192,23 +210,25 @@ transmuter refine base.c \
 
 **All flags:**
 
-| Flag                   | Description                                              |
-|------------------------|----------------------------------------------------------|
-| `--target <path>`      | Target object file (.o)                                  |
-| `--function <name>`    | Function name to match                                   |
-| `--compiler <cmd>`     | Compiler command template                                |
-| `--guideline <id>`     | Guideline to apply (omit to list available)              |
-| `--cwd <path>`         | Working directory for the compiler                       |
-| `--profile <id>`       | Compiler profile                                         |
-| `--concurrency <n>`    | Total concurrent slots                                   |
-| `--max-iterations <n>` | Max iterations per violation                             |
-| `--timeout <ms>`       | Max time per violation in ms                             |
-| `--seed <n>`           | RNG seed for reproducibility                             |
-| `--skip-merge`         | Only run exploration, skip merge phase                   |
-| `--no-cleanup`         | Do not clean up code after refinement                    |
-| `--constraints <path>` | JSON file with focus constraints and hypotheses          |
-| `--config <path>`      | Explicit path to `decomp.yaml`                           |
-| `--api`                | Start HTTP control server                                |
+| Flag                      | Description                                                                                            |
+|---------------------------|--------------------------------------------------------------------------------------------------------|
+| `--target <path>`         | Target object file (.o)                                                                                |
+| `--function <name>`       | Function name to match                                                                                 |
+| `--compiler <cmd>`        | Compiler command template                                                                              |
+| `--guideline <id>`        | Guideline to apply (omit to list available)                                                            |
+| `--cwd <path>`            | Working directory for the compiler                                                                     |
+| `--profile <id>`          | Compiler profile                                                                                       |
+| `--concurrency <n>`       | Total concurrent slots (default: `min(CPU count, 4)`)                                                  |
+| `--max-compiles <n>`      | Max compile attempts per violation (default: unlimited)                                                |
+| `--timeout <ms>`          | Max time per violation in ms (default: unlimited)                                                      |
+| `--seed <n>`              | RNG seed for reproducibility                                                                           |
+| `--skip-merge`            | Only run Phase 1 exploration, skip merge phase                                                         |
+| `--no-cleanup`            | Skip cleanup after refinement                                                                          |
+| `--constraints <path>`    | JSON file with `focusConstraints` and/or `violationHypotheses` to guide each violation's sub-search    |
+| `--config <path>`         | Explicit path to `decomp.yaml`                                                                         |
+| `--source-prefix <path>`  | File whose contents are prepended to every compiled candidate                                          |
+| `--api`                   | Start HTTP control server                                                                              |
+| `--api-port <n>`          | Fixed port for the API server (default: random)                                                        |
 
 #### Viewing a report
 
@@ -314,7 +334,7 @@ const search = new MutationSearch({
   cwd: '/path/to/project',
   profile: 'agbcc',
   concurrency: 4,
-  maxIterations: 10_000,
+  maxCompiles: 10_000,
   onEvent(event) {
     if (event.type === 'forked') {
       console.log(`Score: ${event.oldScore} -> ${event.newScore} (${event.ruleId})`);
@@ -426,7 +446,7 @@ tools:
 1. **Parse** the source with [ast-grep](https://ast-grep.github.io/) (tree-sitter under the hood — grammar selected by language)
 2. **Select** a branch from the pool (fitness-proportional: lower score = higher selection probability, with 10% random exploration)
 3. **Mutate** by picking a rule (filtered by diff-type affinity, then selected via per-target Thompson Sampling) and applying it to the AST
-4. **Deduplicate** via SHA-256 hash — skip if an identical source was already compiled
+4. **Deduplicate** via a content hash — skip if an identical source was already compiled
 5. **Compile** via the user's compiler command (runs as a subprocess)
 6. **Score** using [objdiff](https://github.com/encounter/objdiff) — count instruction-level differences against the target
 7. **Update** the pool: if the score improved, the branch adopts the new code

@@ -8,7 +8,7 @@ export { detectLanguage } from './language.js';
 export { ensureLanguageRegistered } from './parser.js';
 
 // Main class
-export { MutationSearch } from './search/mutation-search.js';
+export { MutationSearch, defaultConcurrency } from './search/mutation-search.js';
 export type { SummarizeResult } from './pipeline/pool.js';
 
 // Session store
@@ -120,6 +120,11 @@ export type { SmellBreakdown } from './cleanup/smell.js';
 
 // Reducer
 export { Reducer } from './reducer/reducer.js';
+
+// Isolate
+export { isolateFunction } from './isolate/isolate.js';
+export type { IsolateResult } from './isolate/isolate.js';
+export { extractFunctionDefinition } from './isolate/extract-function.js';
 
 // Scoring (for advanced consumers)
 export { Scorer } from './scoring/scorer.js';

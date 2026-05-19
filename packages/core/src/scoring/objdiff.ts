@@ -3,12 +3,8 @@
  *
  * Shared class wrapping objdiff-wasm.
  * Provides functionality to parse object files and extract assembly.
- *
- * Ported from Mizuchi's src/shared/objdiff.ts.
  */
-import fs from 'fs/promises';
 import type * as ObjdiffWasm from 'objdiff-wasm';
-import { fileURLToPath } from 'url';
 import type { DiffType, StructuredDifference } from '~/types.js';
 
 type ObjdiffModule = typeof ObjdiffWasm;
@@ -35,25 +31,9 @@ export class Objdiff {
   }
 
   static async #initializeObjdiff(): Promise<ObjdiffModule> {
-    // Node.js fetch doesn't support file:// URLs, so we patch it temporarily
-    // to load local files when objdiff-wasm requests them during initialization
-    const originalFetch = global.fetch;
-    global.fetch = async (input: string | URL | Request): Promise<Response> => {
-      const url = input.toString();
-      if (url.includes('objdiff.core.wasm')) {
-        const buffer = await fs.readFile(fileURLToPath(url));
-        return new Response(buffer, { headers: { 'content-type': 'application/wasm' } });
-      }
-      return originalFetch(input);
-    };
-
-    try {
-      const objdiff = await import('objdiff-wasm');
-      objdiff.init('error');
-      return objdiff;
-    } finally {
-      global.fetch = originalFetch;
-    }
+    const objdiff = await import('objdiff-wasm');
+    objdiff.init('error');
+    return objdiff;
   }
 
   /**
@@ -77,7 +57,7 @@ export class Objdiff {
     const objdiff = await Objdiff.#wasmModule!;
     const diffConfig = await this.#getDiffConfig();
 
-    const fileBuffer = await fs.readFile(filePath);
+    const fileBuffer = await Bun.file(filePath).arrayBuffer();
     const parsedObject = objdiff.diff.Object.parse(new Uint8Array(fileBuffer), diffConfig, side);
 
     return parsedObject;

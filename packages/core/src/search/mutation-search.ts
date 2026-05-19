@@ -1,8 +1,9 @@
 /**
  * MutationSearch — generic mutation search loop with pluggable objectives.
  *
- * Assembles Pool, SlotOrchestrator, MutationEngine, Compiler, and Scorer
- * into a concurrent search that mutates source code to minimize a score.
+ * Assembles Pool, SlotOrchestrator, Compiler, and Scorer into a concurrent
+ * search that mutates source code to minimize a score. Per-slot mutation
+ * engines live inside their Bun Workers, not on the main thread.
  * The default score is assembly instruction-level diff count (lower = better,
  * 0 = perfect). Provide `scoreTransform` to optimize a different objective
  * (e.g., smell score for cleanup) while still using assembly scoring as the base.
@@ -14,15 +15,12 @@ import os from 'os';
 import { Compiler } from '~/compiler/compiler.js';
 import type { Language } from '~/language.js';
 import { ensureLanguageRegistered } from '~/parser.js';
-import { Deduplicator } from '~/pipeline/deduplicator.js';
 import { Pool } from '~/pipeline/pool.js';
 import type { SummarizeResult } from '~/pipeline/pool.js';
 import { getProfile } from '~/profiles/get-profile.js';
 import { Rng } from '~/rng.js';
 import { AdaptiveSelector } from '~/rules/adaptive-selector.js';
 import { builtInRules } from '~/rules/built-in/index.js';
-import { MutationEngine } from '~/rules/engine.js';
-import { CompositeNodeFilter } from '~/rules/node-filter.js';
 import { RuleRegistry } from '~/rules/registry.js';
 import { Objdiff } from '~/scoring/objdiff.js';
 import { Scorer } from '~/scoring/scorer.js';
@@ -43,6 +41,11 @@ import type {
 
 const DEFAULT_STATS_INTERVAL = 100;
 
+/** Default worker-slot count when the caller didn't supply `concurrency`. */
+export function defaultConcurrency(): number {
+  return Math.min(os.cpus().length, 4);
+}
+
 const DEFAULT_AUTO_COMPACT: Required<AutoCompactPolicy> = {
   staleAfterAttempts: 500,
   minStaleThreshold: 20,
@@ -56,7 +59,6 @@ export class MutationSearch {
   #registry: RuleRegistry;
   #rng: Rng;
   #pool: Pool;
-  #engines: MutationEngine[] = [];
   #orchestrator: SlotOrchestrator | null = null;
   #adaptiveSelector: AdaptiveSelector | null = null;
   #focusRegions: FocusRegionConstraint[] = [];
@@ -147,14 +149,9 @@ export class MutationSearch {
     let compiler: Compiler | undefined;
 
     try {
-      // Ensure language grammar is registered
-      await ensureLanguageRegistered(this.#language);
+      ensureLanguageRegistered(this.#language);
 
-      // Initialize scorer
       const scorer = new Scorer(this.#opts.targetObjectPath, this.#opts.functionName, this.#opts.diffSettings);
-      await scorer.init();
-
-      // Compile and score the initial source to get baseline
       compiler = new Compiler({
         command: this.#opts.compilerCommand,
         cwd: this.#opts.cwd,
@@ -164,7 +161,8 @@ export class MutationSearch {
         sourcePrefix: this.#opts.sourcePrefix,
       });
 
-      const initialCompile = await compiler.compile(this.#opts.source);
+      // Scorer init (WASM + target parse) and the genesis compile share no state.
+      const [, initialCompile] = await Promise.all([scorer.init(), compiler.compile(this.#opts.source)]);
       if (!initialCompile.success) {
         const result: MutationSearchResult = {
           perfectMatch: false,
@@ -271,27 +269,8 @@ export class MutationSearch {
       this.#focusRegions = constraints.filter((c): c is FocusRegionConstraint => c.type === 'focus-region');
       this.#avoidRegions = constraints.filter((c): c is AvoidRegionConstraint => c.type === 'avoid-region');
 
-      const nodeFilter =
-        this.#focusRegions.length > 0 || this.#avoidRegions.length > 0
-          ? new CompositeNodeFilter(this.#focusRegions, this.#avoidRegions)
-          : undefined;
-
-      // Create adaptive selector for Thompson Sampling rule selection
       const adaptiveSelector = new AdaptiveSelector(this.#opts.adaptiveSelection);
       this.#adaptiveSelector = adaptiveSelector;
-
-      // Create per-slot mutation engines with forked RNGs for deterministic isolation
-      const engineFactory = (slotIndex: number): MutationEngine => {
-        const slotRng = this.#rng.fork(slotIndex);
-        const engine = new MutationEngine(this.#registry, slotRng, {
-          adaptiveSelector,
-          language: this.#language,
-          nodeFilter,
-          avoidRegions: this.#avoidRegions,
-        });
-        this.#engines.push(engine);
-        return engine;
-      };
 
       // Process hypothesis constraints
       for (const constraint of constraints) {
@@ -317,6 +296,17 @@ export class MutationSearch {
         const hypScore = this.#opts.scoreTransform
           ? this.#opts.scoreTransform(constraint.source, hypResult)
           : hypRawScore;
+        // Refiner sub-searches set a `candidateFilter` that rejects sources
+        // which still contain the violation. Apply it here too so a
+        // hypothesis that still contains the violation can't be reported
+        // as a fixed-by-hypothesis match. Treat a filter-rejected
+        // hypothesis the same as a compile/score failure (score = -1) so
+        // it neither injects nor declares a perfect match.
+        const passesFilter = !this.#opts.candidateFilter || this.#opts.candidateFilter(constraint.source);
+        if (!passesFilter) {
+          emit({ type: 'hypothesis-scored', constraintId: constraint.id, score: -1 });
+          continue;
+        }
         const injectAsBranch = constraint.injectAsBranch ?? true;
         let mutationTargetId: string | undefined;
         if (injectAsBranch) {
@@ -333,6 +323,10 @@ export class MutationSearch {
             candidateId: target.candidateId,
             score: hypScore,
             origin: 'external',
+            // Preserve the hypothesis source on the event so SessionStore
+            // records the candidate's actual source instead of falling
+            // back to the original (pre-hypothesis) source.
+            source: constraint.source,
             assembly: hypResult.assembly,
             assemblyDiff: hypResult.assemblyDiff,
             breakdown: hypResult.breakdown,
@@ -364,29 +358,33 @@ export class MutationSearch {
         }
       }
 
-      // Create deduplicator and add the initial source
-      const deduplicator = new Deduplicator();
-      deduplicator.checkAndAdd(this.#opts.source);
+      const concurrency = this.#opts.concurrency ?? defaultConcurrency();
 
-      // Create and run orchestrator
       this.#orchestrator = new SlotOrchestrator({
         pool: this.#pool,
-        engineFactory,
-        compiler,
-        scorer,
-        deduplicator,
+        adaptiveSelector,
+        registry: this.#registry,
+        concurrency,
+        seed: this.#opts.seed ?? Math.floor(Math.random() * 0xffffffff),
+        language: this.#language,
         functionName: this.#opts.functionName,
-        concurrency: this.#opts.concurrency ?? Math.min(os.cpus().length, 4),
-        maxIterations: this.#opts.maxIterations ?? Infinity,
-        timeoutMs: this.#opts.timeoutMs ?? Infinity,
         mutationDepth: this.#opts.mutationDepth ?? 1,
+        sourcePrefix: this.#opts.sourcePrefix ?? '',
+        focusRegions: this.#focusRegions,
+        avoidRegions: this.#avoidRegions,
+        adaptiveSelectorWindowSize: this.#opts.adaptiveSelection?.windowSize ?? 500,
+        compilerCommand: this.#opts.compilerCommand,
+        compilerCwd: this.#opts.cwd ?? process.cwd(),
+        targetObjectPath: this.#opts.targetObjectPath,
+        diffSettings: this.#opts.diffSettings ?? {},
+        maxCompiles: this.#opts.maxCompiles ?? Infinity,
+        timeoutMs: this.#opts.timeoutMs ?? Infinity,
         statsInterval: DEFAULT_STATS_INTERVAL,
         onEvent: emit,
         signal: this.#abortController.signal,
         candidateFilter: this.#opts.candidateFilter,
         scoreTransform: this.#opts.scoreTransform,
-        adaptiveSelector,
-        maxUnproductiveIterations: this.#opts.maxUnproductiveIterations,
+        maxUnproductiveResults: this.#opts.maxUnproductiveResults,
       });
 
       await this.#orchestrator.run();
@@ -399,14 +397,14 @@ export class MutationSearch {
       } else if (this.#abortController.signal.aborted) {
         reason = 'aborted';
       } else if (
-        this.#opts.maxIterations !== undefined &&
-        this.#orchestrator.getIteration() >= this.#opts.maxIterations
+        this.#opts.maxCompiles !== undefined &&
+        this.#orchestrator.getCompileAttempts() >= this.#opts.maxCompiles
       ) {
-        reason = 'max-iterations';
+        reason = 'max-compiles';
       } else if (
-        this.#opts.maxUnproductiveIterations !== undefined &&
+        this.#opts.maxUnproductiveResults !== undefined &&
         this.#orchestrator.getCompiledCount() === 0 &&
-        this.#orchestrator.getIteration() >= this.#opts.maxUnproductiveIterations
+        this.#orchestrator.getIteration() >= this.#opts.maxUnproductiveResults
       ) {
         reason = 'exhausted';
       } else {
@@ -644,17 +642,32 @@ export class MutationSearch {
 
   /** Update rule weights at runtime. Returns unknown rule IDs (empty if all valid). */
   updateWeights(weights: Record<string, number>): string[] {
-    return this.#registry.setWeights(weights);
+    const unknown = this.#registry.setWeights(weights);
+    this.#broadcastRulesIfWorkers();
+    return unknown;
   }
 
   /** Enable a previously disabled rule. Returns false if the rule doesn't exist. */
   enableRule(ruleId: string): boolean {
-    return this.#registry.enable(ruleId);
+    const ok = this.#registry.enable(ruleId);
+    if (ok) {
+      this.#broadcastRulesIfWorkers();
+    }
+    return ok;
   }
 
   /** Disable a rule. Returns false if the rule doesn't exist. */
   disableRule(ruleId: string): boolean {
-    return this.#registry.disable(ruleId);
+    const ok = this.#registry.disable(ruleId);
+    if (ok) {
+      this.#broadcastRulesIfWorkers();
+    }
+    return ok;
+  }
+
+  /** Fan rule changes out to running workers. No-op when no orchestrator is running. */
+  #broadcastRulesIfWorkers(): void {
+    this.#orchestrator?.broadcastRules();
   }
 
   /** Get the rule catalog: id, description, current weight, and enabled state for every registered rule. */
@@ -719,7 +732,7 @@ export class MutationSearch {
   #maybeAutoCompact(candidateCount: number, emit: (event: MutationSearchEvent) => void): void {
     const policy = this.#autoCompact!;
     const active = this.#pool.getActiveTargets();
-    const concurrency = this.#opts.concurrency ?? Math.min(os.cpus().length, 4);
+    const concurrency = this.#opts.concurrency ?? defaultConcurrency();
 
     const { toDisable } = pickAutoCompactTargets(
       active,
@@ -751,9 +764,7 @@ export class MutationSearch {
   setFocusConstraints(focusRegions: FocusRegionConstraint[], avoidRegions: AvoidRegionConstraint[]): void {
     this.#focusRegions = focusRegions;
     this.#avoidRegions = avoidRegions;
-    for (const engine of this.#engines) {
-      engine.setFocusConstraints(focusRegions, avoidRegions);
-    }
+    this.#orchestrator?.setFocusConstraints(focusRegions, avoidRegions);
   }
 
   /** Get the current focus and avoid region constraints. */
