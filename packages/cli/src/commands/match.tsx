@@ -551,15 +551,13 @@ function MatchApp({ args, onComplete }: { args: MatchArgs; onComplete: (code: nu
         }
 
         if (result.bestScore < result.baseScore || result.perfectMatch) {
-          const sourceDir = path.dirname(path.resolve(args.sourceFile));
-          const outPath = path.join(sourceDir, `${fnName}-${result.bestScore}.c`);
+          const outPath = path.join(process.cwd(), `${fnName}-${result.bestScore}.c`);
           await fs.writeFile(outPath, cleanedSource);
         }
 
         // Save session report (with cleanup data if available)
         const report = cleanupReportData ? { ...store.toJSON(), cleanup: cleanupReportData } : store.toJSON();
-        const sourceDir = path.dirname(path.resolve(args.sourceFile));
-        const reportFile = path.join(sourceDir, `session-${Date.now()}.json`);
+        const reportFile = path.join(process.cwd(), `session-${Date.now()}.json`);
         await fs.writeFile(reportFile, JSON.stringify(report, null, 2));
         setReportPath(reportFile);
 

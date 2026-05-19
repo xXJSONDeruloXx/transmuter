@@ -232,7 +232,7 @@ transmuter refine base.c \
 
 #### Viewing a report
 
-Every `transmuter match` or `transmuter refine` runs produces a JSON report file alongside the source file (e.g., `session-1711843200000.json`). The report captures the critical improvement chain with diffs, per-rule statistics, branch lifecycle, and score timeline. They are useful for understanding how a match was found and provide insights.
+Every `transmuter match` or `transmuter refine` runs produces a JSON report file (e.g., `session-1711843200000.json`). The report captures the critical improvement chain with diffs, per-rule statistics, branch lifecycle, and score timeline. They are useful for understanding how a match was found and provide insights.
 
 Use the built-in webapp to browse session reports in your browser:
 

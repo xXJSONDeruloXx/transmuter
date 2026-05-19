@@ -724,16 +724,14 @@ function RefineApp({ args, onComplete }: { args: RefineArgs; onComplete: (code: 
 
         // Write output if any violations were fixed
         if (result.violationsFixed > 0) {
-          const sourceDir = path.dirname(path.resolve(args.sourceFile));
-          const outPath = path.join(sourceDir, `${fnName}-refined.c`);
+          const outPath = path.join(process.cwd(), `${fnName}-refined.c`);
           await fs.writeFile(outPath, finalSource);
           setOutputPath(outPath);
         }
 
         // Save report (with cleanup data if available)
         const report = cleanupReportData ? { ...store.toJSON(), cleanup: cleanupReportData } : store.toJSON();
-        const sourceDir = path.dirname(path.resolve(args.sourceFile));
-        const reportFile = path.join(sourceDir, `refine-${Date.now()}.json`);
+        const reportFile = path.join(process.cwd(), `refine-${Date.now()}.json`);
         await fs.writeFile(reportFile, JSON.stringify(report, null, 2));
         setReportPath(reportFile);
 
