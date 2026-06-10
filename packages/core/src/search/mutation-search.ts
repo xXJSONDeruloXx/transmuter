@@ -421,6 +421,13 @@ export class MutationSearch {
         reason,
       };
 
+      const finalStats = this.#orchestrator.getStats();
+      process.stderr.write(
+        `[TRANSMUTER_SUMMARY] reason=${reason} best=${best.score} iterations=${result.totalIterations} ` +
+          `compiled=${finalStats.compiled} compile_errors=${finalStats.errors} scorer_failed=${finalStats.scorerFailures} ` +
+          `deduped=${finalStats.deduped} no_mutation=${finalStats.noMutation}\n`,
+      );
+
       emit({
         type: 'completed',
         reason,

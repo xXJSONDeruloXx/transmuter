@@ -267,6 +267,12 @@ function CompletedView({
           {formatDuration(state.elapsed)}
         </Text>
       </Box>
+      <Box>
+        <Text dimColor>
+          Compiled: {state.compiled.toLocaleString()} · Forks: {state.forkCount.toLocaleString()} · Errors:{' '}
+          {state.errors.toLocaleString()} · Deduped: {state.deduped.toLocaleString()}
+        </Text>
+      </Box>
       {state.completionReason && state.completionReason !== 'perfect-match' && (
         <Box>
           <Text dimColor>Stopped: {state.completionReason}</Text>

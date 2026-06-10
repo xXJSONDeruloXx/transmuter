@@ -76,7 +76,7 @@ interface WorkerSlot {
   ready: Promise<void>;
 }
 
-interface SlotStats {
+export interface SlotStats {
   compiled: number;
   errors: number;
   scorerFailures: number;
@@ -226,6 +226,10 @@ export class SlotOrchestrator {
 
   getCompiledCount(): number {
     return this.#slotStats.compiled;
+  }
+
+  getStats(): SlotStats {
+    return { ...this.#slotStats };
   }
 
   /**

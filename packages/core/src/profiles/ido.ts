@@ -10,6 +10,7 @@ export const idoProfile: Profile = {
     'reorder-stmts': 30,
     'cast-expr': 25,
     'commutative-swap': 20,
+    'branch-compare-shape': 18,
     sameline: 10,
     'pad-var-decl': 5,
   },

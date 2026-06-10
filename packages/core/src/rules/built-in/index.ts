@@ -6,6 +6,7 @@ import { addMask } from './add-mask.js';
 import { addSubSwap } from './add-sub-swap.js';
 import { asmBarrier } from './asm-barrier.js';
 import { asmRegisterSwap } from './asm-register-swap.js';
+import { branchCompareShape } from './branch-compare-shape.js';
 import { castExpr } from './cast-expr.js';
 import { castStyleSwap } from './cast-style-swap.js';
 import { chainAssignment } from './chain-assignment.js';
@@ -52,7 +53,7 @@ import { tempForExpr } from './temp-for-expr.js';
 import { voidCast } from './void-cast.js';
 import { xorZero } from './xor-zero.js';
 
-/** All 49 built-in mutation rules. */
+/** All built-in mutation rules. */
 export const builtInRules: Rule[] = [
   tempForExpr,
   reorderStmts,
@@ -61,6 +62,7 @@ export const builtInRules: Rule[] = [
   removeCast,
   addMask,
   commutativeSwap,
+  branchCompareShape,
   insertBlock,
   structRefSwap,
   addSubSwap,
@@ -113,6 +115,7 @@ export {
   removeCast,
   addMask,
   commutativeSwap,
+  branchCompareShape,
   insertBlock,
   structRefSwap,
   addSubSwap,

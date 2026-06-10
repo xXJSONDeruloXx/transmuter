@@ -92,6 +92,9 @@ export function reduceEvent(state: CliState, event: MutationSearchEvent): CliSta
         targets: event.targets,
         candidateCount: event.candidateCount,
         bestScore: event.bestScore,
+        compiled: event.compiled,
+        errors: event.errors,
+        deduped: event.deduped,
       };
 
     case 'completed':
